@@ -1,11 +1,16 @@
 const MongoClient = require('mongodb').MongoClient;
 require('dotenv').config();
+const uri = process.env.MONGODB_URI;
 
 let client;
 let scores;
 let isConnected = false;
 async function main() {
-    const uri = process.env.MONGODB_URI;
+    if (!uri){
+        console.warn('MONGODB_URI not set. Skipping MongoDB connection...\n');
+        welcomeMessage();
+        return;
+    }
 
     client = new MongoClient(uri, { useNewUrlParser: true, 
                                           useUnifiedTopology: true });
@@ -235,6 +240,10 @@ async function findScore(id, m){
     }
 }
 async function highscores(recent){
+    if (!isConnected){
+        console.warn("You are not connected to MongoDB...");
+        return;
+    }
     var twodays = 2 * 24 * 60 * 60 * 1000;
     twodays = twodays/8;
     try{
