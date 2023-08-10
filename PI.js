@@ -1,8 +1,37 @@
+const MongoClient = require('mongodb').MongoClient;
+require('dotenv').config();
+
+let client;
+let scores;
+let isConnected = false;
+async function main() {
+    const uri = process.env.MONGODB_URI;
+
+    client = new MongoClient(uri, { useNewUrlParser: true, 
+                                          useUnifiedTopology: true });
+
+    try {
+        await client.connect();
+        console.log("\nConnected to MongoDB Atlas\n\n");
+        isConnected = true;
+        const db = client.db("piTypingGame");
+        scores = db.collection("scores");
+        setTimeout(() => {
+            welcomeMessage();
+        }, 340);
+    } catch (err) {
+        console.error("Error connecting to MongoDB Atlas:", err);
+        welcomeMessage();
+    }
+}
+main().catch(console.error);
+
+
+
 const PI = "3.14159265358979323846264338327950288419716939937510" +
          "582097494459230781640628620899862803482534211706798";
 var gameMode = 15;
-var auto = false;
-welcomeMessage();
+var auto = true;
 
 function selectGame(input){
     if (input == "15"){
@@ -19,6 +48,14 @@ function selectGame(input){
         } else {
             console.log(`Automatically reset after ${gameMode} digits off.\n`);
         }
+        return;
+    }
+    else if (input == "high"){
+        highscores(false);
+        return;
+    }
+    else if (input == "recent high"){
+        highscores(true);
         return;
     }
     else {
@@ -77,6 +114,10 @@ stdin.on( 'data', function( key ){
         let lastKeystrokeTime = Date.now();
         startTime = lastKeystrokeTime;
     }
+    else if (key === 'a' && isNaN(startTime) && typed ===""){
+        let lastKeystrokeTime = Date.now();
+        startTime = lastKeystrokeTime;
+    }
     // type no matter what
     if (key <= '\u007e' && key >= '\u0020'){
         typed+= key;
@@ -85,8 +126,19 @@ stdin.on( 'data', function( key ){
     // check
     if (typed.length >= gameMode + 2 && !isNaN(startTime)){
         var time = Date.now() - startTime;
+        var now = new Date();
         if (check(typed, gameMode)){
             console.log(`You finished in ${time/1000}s \n`);
+            if (isConnected){
+                const result = {
+                    mode: gameMode,
+                    timeTakenMs: time,
+                    timestamp: time + startTime,
+                    date: now.toDateString().substring(4),
+                    time: now.toTimeString().substring(0, 8),
+                }; 
+                insertScore(result);
+            }
             typed = "";
             startTime = NaN;
         } else if (auto){
@@ -109,4 +161,150 @@ function check(input, mode){
         return true;
     }
     return false;
+}
+
+async function insertScore(res){
+    try {
+        const insertionResult = await scores.insertOne(res);
+        console.log(`Score saved with ID: ` +
+                    `${insertionResult.insertedId}`);
+        findScore(insertionResult.insertedId, gameMode);
+    } catch (err){
+        console.log("Error inserting score:", err);
+    }
+}
+
+async function findScore(id, m){
+    try{
+        const pipeline = [
+          { $match: { mode: m } },
+          {
+            $addFields: {
+              averagecpms: {
+                $round: [
+                  {
+                    $divide: [
+                      '$timeTakenMs',
+                      { $add: ['$mode', 2] }
+                    ]
+                  },
+                  2
+                ]
+              }
+            }
+          },
+          { $sort: { averagecpms: 1 } },
+          {
+            $group: {
+              _id: null,
+              docs: { $push: '$$ROOT' }
+            }
+          },
+          {
+            $unwind: {
+              path: '$docs',
+              includeArrayIndex: 'rowNumber'
+            }
+          },
+          {
+            $project: {
+              rowNumber: { $add: ['$rowNumber', 1] },
+             // _id: {$toString: '$docs._id'},
+              _id : '$docs._id',
+             /* milliseconds: '$docs.timeTakenMs',
+              averagecpm: '$docs.averagecpms',
+              time: '$docs.time',
+              date: '$docs.date'*/
+            }
+          }
+        ];
+        const aggregationResult = await scores.aggregate(pipeline, {
+            maxTimeMS: 60000,
+            allowDiskUse: true
+        }).toArray();
+        const matchingDocument = aggregationResult.filter((doc) =>
+                                 doc._id.toString() === id.toString());
+        if (matchingDocument && matchingDocument.length > 0) {
+            console.log("Ranking:", matchingDocument[0].rowNumber, "\n");
+            return;
+        } else {
+            console.log("No matching document found in the aggregation result.");
+        }
+    } catch (err) {
+        console.log("Error", err);
+    }
+}
+async function highscores(recent){
+    var twodays = 2 * 24 * 60 * 60 * 1000;
+    twodays = twodays/8;
+    try{
+        let pipeline = [];
+        if (recent){
+            pipeline.push({
+                $match: {
+                    timestamp: {
+                        $gte: Date.now() - twodays
+                    }
+                }
+            });
+        }
+        pipeline.push({ 
+            
+                  $project: {
+                    timeTakenMs: 1,
+                    mode: 1,
+                    _id: 0
+                  }
+                },
+                { $match: { mode: { $in: [15, 25, 50] } } },
+                { $sort: { timeTakenMs: 1 } },
+                {
+                  $facet: {
+                    mode_15: [
+                      { $match: { mode: 15 } },
+                      { $limit: 50 }
+                    ],
+                    mode_25: [
+                      { $match: { mode: 25 } },
+                      { $limit: 20 }
+                    ],
+                    mode_50: [
+                      { $match: { mode: 50 } },
+                      { $limit: 20 }
+                    ]
+                  }
+                },
+                {
+                  $project: {
+                    mode_15_scores: {
+                      $map: {
+                        input: '$mode_15',
+                        as: 'item',
+                        in: '$$item.timeTakenMs'
+                      }
+                    },
+                    mode_25_scores: {
+                      $map: {
+                        input: '$mode_25',
+                        as: 'item',
+                        in: '$$item.timeTakenMs'
+                      }
+                    },
+                    mode_50_scores: {
+                      $map: {
+                        input: '$mode_50',
+                        as: 'item',
+                        in: '$$item.timeTakenMs'
+                      }
+                    }
+                  }
+                }
+          );
+        let res = await scores.aggregate(pipeline, 
+        { maxTimeMS: 60000, allowDiskUse: true }).toArray();
+        console.log(res, "\n");
+        }
+    catch (err){
+        console.log("error", err);
+    }
 }
